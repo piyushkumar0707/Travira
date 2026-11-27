@@ -50,6 +50,10 @@ def load_model():
     global clf, label_encoder
     if os.path.exists(MODEL_PATH) and os.path.exists(ENCODER_PATH):
         clf = joblib.load(MODEL_PATH)
+        # The model was saved with n_jobs=-1 (use every CPU core), which suits training.
+        # The API scores one row per request, where coordinating threads costs more
+        # time than it saves, so predict on a single thread.
+        clf.n_jobs = 1
         label_encoder = joblib.load(ENCODER_PATH)
         print("✅ Safety Score ML model loaded successfully")
     else:
