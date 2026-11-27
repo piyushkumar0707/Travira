@@ -360,6 +360,90 @@ describe('Node API integration', { concurrency: false }, () => {
     assert.equal(savedIncident.status, 'Open');
   });
 
+  // ===== Emergency status =====
+
+  const shareLocation = (account) => api('/api/mobile/location/update', {
+    method: 'POST', token: account.token, body: { lat: 19.2, lng: 72.9 },
+  });
+  const setIncidentStatus = async (incidentId, status) => {
+    const { response, body } = await api(`/api/incidents/${incidentId}`, {
+      method: 'PUT', token: signToken('officer'), body: { status },
+    });
+    assert.equal(response.status, 200, JSON.stringify(body));
+  };
+  const recordOf = (account) => Tourist.findOne({ userId: account.user.id }).lean();
+
+  test('an emergency survives location updates until staff close every panic alert', async () => {
+    const tourist = await trackedTourist('emergency');
+    const first = (await panic(tourist)).body.incidentId;
+    const second = (await panic(tourist)).body.incidentId;
+
+    const update = await shareLocation(tourist);
+    assert.equal(update.response.status, 200, JSON.stringify(update.body));
+    assert.equal(update.body.tourist.status, 'emergency');
+    assert.deepEqual(update.body.tourist.location, { lat: 19.2, lng: 72.9 });
+    assert.equal(update.body.tourist.scoreHistory.length, 1, 'scores are still recorded');
+
+    const scored = await api(`/api/tourists/${tourist.touristId}/safety-score`, {
+      method: 'PUT', token: signToken('officer'), body: { safetyScore: 90 },
+    });
+    assert.equal(scored.response.status, 200);
+    assert.equal((await recordOf(tourist)).status, 'emergency', 'a new score does not end it');
+
+    await setIncidentStatus(await createIncident(tourist.touristId), 'Resolved');
+    assert.equal((await recordOf(tourist)).status, 'emergency', 'another kind of incident');
+    await setIncidentStatus(first, 'Resolved');
+    assert.equal((await recordOf(tourist)).status, 'emergency', 'one alert is still open');
+    await setIncidentStatus(second, 'Monitoring');
+    assert.equal((await recordOf(tourist)).status, 'emergency', 'monitoring is not closed');
+
+    const staffSocket = trackSocket(await connectSocket(signToken('officer')));
+    const event = nextSocketEvent(staffSocket, 'tourist:updated');
+    await setIncidentStatus(second, 'Closed');
+    assert.equal((await recordOf(tourist)).status, 'active');
+    assert.equal((await event).status, 'active', 'staff screens are told');
+
+    await setIncidentStatus(first, 'Open');
+    assert.equal((await recordOf(tourist)).status, 'emergency', 'reopening restores it');
+    await Tourist.updateOne({ userId: tourist.user.id }, { safetyScore: 30 });
+    await setIncidentStatus(first, 'Resolved');
+    assert.equal((await recordOf(tourist)).status, 'high-risk', 'a low score stays high risk');
+  });
+
+  test('an alert sent before the first location update still counts', async () => {
+    const account = await registerTourist('early_panic');
+    const { body } = await panic(account);
+
+    assert.equal((await shareLocation(account)).body.tourist.status, 'emergency');
+    assert.equal((await shareLocation(account)).body.tourist.status, 'emergency');
+    await setIncidentStatus(body.incidentId, 'Resolved');
+    assert.notEqual((await recordOf(account)).status, 'emergency');
+    assert.notEqual((await shareLocation(account)).body.tourist.status, 'emergency');
+  });
+
+  test('a caller cannot choose an incident ID to fake a panic alert', async () => {
+    const victim = await trackedTourist('spoof_target');
+    const attacker = await registerTourist('spoof_sender');
+    const chosen = `PANIC-spoof-${uniqueSuffix()}`;
+
+    const { response, body } = await api('/api/incidents', {
+      method: 'POST', token: attacker.token,
+      body: {
+        incidentId: chosen, touristId: victim.touristId, type: 'Emergency Alert',
+        location: 'Test market', description: 'spoofed alert',
+      },
+    });
+    incidentIds.push(chosen, body.incidentId);
+    assert.equal(response.status, 201, JSON.stringify(body));
+    assert.match(body.incidentId, /^INC-/);
+    assert.equal(await Incident.countDocuments({ incidentId: chosen }), 0);
+
+    // Closing a real alert must not leave the tourist held by the fake one.
+    const real = (await panic(victim)).body.incidentId;
+    await setIncidentStatus(real, 'Resolved');
+    assert.notEqual((await recordOf(victim)).status, 'emergency');
+  });
+
   // ===== Access control =====
 
   test('only staff can change a safety score', async () => {

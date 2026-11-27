@@ -6,6 +6,13 @@ import useLocationSharing, { SEND_INTERVAL_MS } from '../hooks/useLocationSharin
 
 const ZONE_LABELS = { restricted_area: 'Restricted area', high_risk: 'High-risk area' };
 
+// What the server reports about the emergency contact email for one alert.
+const CONTACT_MESSAGES = {
+  sending: 'We are trying to email your emergency contact. Delivery is not confirmed.',
+  recently_sent: 'No new email: emails about your recent alerts were already sent or are being sent.',
+  no_contact: 'No emergency contact is saved, so no email was sent.',
+};
+
 const PanicButton = ({ getPoint }) => {
   const { apiRequest } = useAuth();
   // idle -> confirming -> sending -> sent | failed
@@ -26,7 +33,12 @@ const PanicButton = ({ getPoint }) => {
       setStep('failed');
       return;
     }
-    setOutcome({ incidentId: result.data.incidentId, withLocation: Boolean(point), at: new Date() });
+    setOutcome({
+      incidentId: result.data.incidentId,
+      contactMessage: CONTACT_MESSAGES[result.data.contactEmail],
+      withLocation: Boolean(point),
+      at: new Date(),
+    });
     setStep('sent');
   };
 
@@ -39,6 +51,8 @@ const PanicButton = ({ getPoint }) => {
           <p className="font-semibold">Your alert was recorded at {outcome.at.toLocaleTimeString()}.</p>
           <p>Reference: {outcome.incidentId}</p>
           <p>{outcome.withLocation ? 'Your location was included.' : 'Your location could not be read, so the alert was sent without it.'}</p>
+          {outcome.contactMessage && <p>{outcome.contactMessage}</p>}
+          <p>Your status stays as an emergency until safety staff close your alerts.</p>
           <p className="mt-2">If you are in immediate danger, call your local emergency number.</p>
         </div>
       )}
@@ -53,7 +67,7 @@ const PanicButton = ({ getPoint }) => {
         <div role="alertdialog" aria-labelledby="panic-confirm" className="space-y-3">
           <p id="panic-confirm" className="text-sm text-gray-800">
             <strong>Send an emergency alert now?</strong> It is recorded as a high-severity incident for safety staff.
-            If you saved an emergency contact, an email to them is attempted.
+            If you saved an emergency contact, an email to them is attempted, though repeat alerts may not email them again.
           </p>
           <div className="flex flex-col sm:flex-row gap-3">
             <button type="button" onClick={sendAlert} className="px-5 py-3 rounded-lg bg-red-600 hover:bg-red-700 text-white font-semibold">

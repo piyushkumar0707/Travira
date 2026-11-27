@@ -22,6 +22,7 @@ const AIService = require('./services/aiService');
 const BlockchainService = require('./services/blockchainService');
 const GeofencingService = require('./services/geofencingService');
 const NotificationService = require('./services/notificationService');
+const { standInId, isPanicIncident, findTouristForIncident, syncEmergencyStatus } = require('./services/emergencyService');
 const { validateBody, validators } = require('./validation');
 
 const app = express();
@@ -474,8 +475,10 @@ app.post('/api/incidents', authenticateToken, validateBody(validators.incident),
     const incidentId = `INC-2024-${String(incidentCount + 1).padStart(3, '0')}`;
     
     const incident = new Incident({
-      incidentId,
       ...req.body,
+      // After the body, so a caller cannot choose the ID. A PANIC- ID is what
+      // holds a tourist in 'emergency', so only the panic route may create one.
+      incidentId,
       status: 'Open'
     });
     
@@ -510,6 +513,13 @@ app.put('/api/incidents/:id', authenticateToken, requireStaff, validateBody(vali
     
     // Emit real-time update
     emitUpdate('incident:updated', incident);
+
+    // Closing or reopening a panic incident ends or restores the emergency.
+    if (isPanicIncident(incident)) {
+      const tourist = await findTouristForIncident(incident);
+      const changed = tourist && await syncEmergencyStatus(tourist);
+      if (changed) emitUpdate('tourist:updated', changed);
+    }
     
     res.json(incident);
   } catch (err) {
@@ -905,6 +915,8 @@ app.post('/api/mobile/location/update', authenticateToken, validateBody(validato
       // Persist once before AI scoring so concurrent first location updates
       // share the same tourist record and can use the atomic score updater.
       await tourist.save();
+      // A panic alert sent before the first location update still counts.
+      tourist = await syncEmergencyStatus(tourist) || tourist;
     } else {
       await tourist.updateLocation(lat, lng, accuracy);
     }
@@ -958,9 +970,9 @@ app.post('/api/mobile/panic/alert', authenticateToken, validateBody(validators.p
     const userId = req.user.userId;
     const username = req.user.username;
     
-    const tourist = await Tourist.findOne({ userId: userId.toString() });
+    let tourist = await Tourist.findOne({ userId: userId.toString() });
     // The stand-in must never match a real tourist ID, which would grant ownership.
-    const touristId = tourist ? tourist.touristId : `UNREGISTERED-${userId}`;
+    const touristId = tourist ? tourist.touristId : standInId(userId);
     
     const incident = new Incident({
       // The random part keeps alerts raised in the same millisecond from colliding.
@@ -978,18 +990,19 @@ app.post('/api/mobile/panic/alert', authenticateToken, validateBody(validators.p
     
     await incident.save();
     
+    // Update tourist status, straight after saving the incident and before any
+    // slower call. Looked up again in case the record was just created.
+    tourist = await Tourist.findOneAndUpdate(
+      { userId: userId.toString() },
+      { $set: { status: 'emergency', safetyScore: 0 } },
+      { new: true }
+    );
+
     // Log to blockchain
     const blockchainResult = await BlockchainService.logIncident(incident);
     if (blockchainResult.success) {
       incident.blockchainHash = blockchainResult.vcHash;
       await incident.save();
-    }
-    
-    // Update tourist status
-    if (tourist) {
-      tourist.status = 'emergency';
-      tourist.safetyScore = 0;
-      await tourist.save();
     }
     
     // Emit real-time emergency alert

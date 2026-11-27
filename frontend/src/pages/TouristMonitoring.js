@@ -8,7 +8,7 @@ import useSocket from '../hooks/useSocket';
 
 // Custom tourist person icon — color-coded by safety score
 const createTouristIcon = (safetyScore, status) => {
-  const isHighRisk = status === 'high-risk' || safetyScore < 70;
+  const isHighRisk = status === 'emergency' || status === 'high-risk' || safetyScore < 70;
   const isModerate = !isHighRisk && safetyScore < 85;
   const color = isHighRisk ? '#ef4444' : isModerate ? '#f97316' : '#22c55e';
   const ring  = isHighRisk ? '#fca5a5' : isModerate ? '#fdba74' : '#86efac';
@@ -37,13 +37,21 @@ const createTouristIcon = (safetyScore, status) => {
   });
 };
 
+const isAlarming = (status) => status === 'emergency' || status === 'high-risk';
+
+// Replace the tourist's record, or add it if this is the first time we see them.
+const upsertTourist = (list, tourist) => (
+  list.some(t => t._id === tourist._id)
+    ? list.map(t => (t._id === tourist._id ? { ...t, ...tourist } : t))
+    : [tourist, ...list]
+);
+
 const TouristMonitoring = () => {
   const { apiRequest } = useAuth();
   const { subscribe, unsubscribe } = useSocket();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [tourists, setTourists] = useState([]);
-  const [summary, setSummary] = useState(null);
   const [query, setQuery] = useState('');
 
   const fetchTourists = async () => {
@@ -52,7 +60,6 @@ const TouristMonitoring = () => {
     const result = await apiRequest('/api/tourists');
     if (result.data && !result.error) {
       setTourists(result.data.tourists || []);
-      setSummary(result.data.summary || null);
     } else {
       setError(result.error || 'Failed to fetch tourists');
     }
@@ -62,16 +69,19 @@ const TouristMonitoring = () => {
   useEffect(() => {
     fetchTourists();
 
-    // Live location updates via WebSocket — no polling needed
-    const handleLocationUpdate = (tourist) => {
-      setTourists(prev =>
-        prev.map(t => (t._id === tourist._id ? { ...t, ...tourist } : t))
-      );
-      setSummary(prev => prev ? { ...prev } : prev);
-    };
+    // Live updates via WebSocket — no polling needed
+    const handleTourist = (tourist) => setTourists(prev => upsertTourist(prev, tourist));
+    // A panic alert has no tourist record if they never shared a location.
+    const handlePanic = ({ tourist }) => tourist && handleTourist(tourist);
 
-    subscribe('tourist:location', handleLocationUpdate);
-    return () => unsubscribe('tourist:location', handleLocationUpdate);
+    subscribe('tourist:location', handleTourist);
+    subscribe('tourist:updated', handleTourist);
+    subscribe('alert:panic', handlePanic);
+    return () => {
+      unsubscribe('tourist:location', handleTourist);
+      unsubscribe('tourist:updated', handleTourist);
+      unsubscribe('alert:panic', handlePanic);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -83,7 +93,10 @@ const TouristMonitoring = () => {
     );
   }, [tourists, query]);
 
-  const avgSafety = summary?.averageSafetyScore ?? Math.round((tourists.reduce((s, t) => s + (t.safetyScore || 0), 0) / Math.max(1, tourists.length)));
+  // Worked out from the list, so the cards follow live updates.
+  const activeCount = tourists.filter(t => t.status === 'active').length;
+  const highRiskCount = tourists.filter(t => t.status === 'emergency' || (t.safetyScore || 0) < 70).length;
+  const avgSafety = Math.round(tourists.reduce((s, t) => s + (t.safetyScore || 0), 0) / Math.max(1, tourists.length));
 
   return (
     <div className="space-y-6">
@@ -92,7 +105,7 @@ const TouristMonitoring = () => {
           <div className="flex items-center">
             <MapPinIcon className="h-8 w-8 text-blue-500" />
             <div className="ml-3">
-              <p className="text-2xl font-bold text-gray-900">{summary?.active ?? tourists.filter(t => t.status === 'active').length}</p>
+              <p className="text-2xl font-bold text-gray-900">{activeCount}</p>
               <p className="text-sm text-gray-600">Active Tourists</p>
             </div>
           </div>
@@ -109,7 +122,7 @@ const TouristMonitoring = () => {
         <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-200">
           <div className="flex items-center">
             <div className="w-8 h-8 bg-red-500 rounded-full flex items-center justify-center">
-              <span className="text-white text-sm font-bold">{summary?.highRisk ?? tourists.filter(t => (t.safetyScore||0) < 70).length}</span>
+              <span className="text-white text-sm font-bold">{highRiskCount}</span>
             </div>
             <div className="ml-3">
               <p className="text-2xl font-bold text-gray-900">High Risk</p>
@@ -159,7 +172,7 @@ const TouristMonitoring = () => {
                       <td className="py-2 pr-4">{t.safetyScore}</td>
                       <td className="py-2 pr-4">
                         <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                          t.status === 'high-risk' ? 'text-red-700 bg-red-100' : 'text-green-700 bg-green-100'
+                          isAlarming(t.status) ? 'text-red-700 bg-red-100' : 'text-green-700 bg-green-100'
                         }`}>
                           {t.status}
                         </span>
@@ -204,8 +217,8 @@ const TouristMonitoring = () => {
                     <div style={{ marginTop: 6 }}>
                       <span style={{
                         padding: '2px 8px', borderRadius: 99, fontSize: 11, fontWeight: 600,
-                        background: t.status === 'high-risk' ? '#fee2e2' : '#dcfce7',
-                        color: t.status === 'high-risk' ? '#dc2626' : '#16a34a'
+                        background: isAlarming(t.status) ? '#fee2e2' : '#dcfce7',
+                        color: isAlarming(t.status) ? '#dc2626' : '#16a34a'
                       }}>{t.status}</span>
                     </div>
                   </div>
