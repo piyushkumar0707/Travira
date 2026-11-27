@@ -64,6 +64,12 @@ The Python commands require the matching service requirements to be installed. T
 
 - `POST /api/login`, `POST /api/register`, `POST /api/mobile/auth/login`, and `GET /api/health` are public. Other `/api` routes require a signed `Bearer` JWT.
 - Public registration creates tourist accounts only. An authenticated admin can create other roles through the same endpoint.
+- Admins and officers only: listing tourists, changing safety scores, updating incidents, blockchain logs, and every `/api/ai/*` route.
+- Admins, officers, or the tourist concerned: reading one tourist record and generating an incident report.
+- Both login routes allow 10 failed attempts per account and 100 per network address in 15 minutes, then answer `429` with `Retry-After`. Successful logins are not counted. Behind a hosting proxy, set `TRUST_PROXY_HOPS` (usually `1`) so each visitor is counted by their own address.
+- Each user can set an emergency contact 5 times per hour; removing it is always allowed. Contact addresses are not verified.
+- Panic alerts are never rate limited: each one is recorded and sent to staff. Only the email to the same contact is capped, at 3 per 10 minutes, and failed sends do not count. The response's `contactEmail` is `sending`, `recently_sent`, or `no_contact`.
+- Rate-limit counts are held in memory, so they reset on restart and are not shared between backend instances.
 - Socket.IO requires the JWT in the handshake `auth.token`; the server sends location and incident events to authenticated admin and officer sockets.
 - The safety-score `/calculate` and case-report `/report` endpoints require a valid JWT signed with the same `JWT_SECRET`.
 - Error responses use an `error` message and a stable `code`. Validation errors may include field details.
