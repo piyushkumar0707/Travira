@@ -66,6 +66,8 @@ print(classification_report(y_test, y_pred, target_names=le.classes_))
 # ── 6. Save model + label encoder ─────────────────────────────────────────
 MODEL_PATH = os.path.join(SCRIPT_DIR, "model.pkl")
 ENCODER_PATH = os.path.join(SCRIPT_DIR, "label_encoder.pkl")
+# Train on every core, but save a model that predicts on one: the API scores one row at a time.
+clf.n_jobs = 1
 joblib.dump(clf, MODEL_PATH)
 joblib.dump(le, ENCODER_PATH)
 
