@@ -7,7 +7,9 @@ const socketIo = require('socket.io');
 const cors = require('cors');
 const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
+const { randomUUID } = require('crypto');
 const { createAuthenticateToken, verifyBearerToken } = require('./auth');
+const { createRateLimiter } = require('./rateLimit');
 
 // Models
 const User = require('./models/User');
@@ -46,6 +48,11 @@ const sendError = (res, status, message) => res.status(status).json({
   code: ERROR_CODES[status] || 'REQUEST_FAILED'
 });
 
+// Behind a hosting proxy every request appears to come from the proxy. Setting
+// TRUST_PROXY_HOPS (usually 1) lets the login limits see the visitor's address.
+const proxyHops = Number(process.env.TRUST_PROXY_HOPS) || 0;
+if (proxyHops > 0) app.set('trust proxy', proxyHops);
+
 // Middleware
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
@@ -65,6 +72,54 @@ const requireRole = (...roles) => {
     next();
   };
 };
+
+const STAFF_ROLES = ['admin', 'officer'];
+const isStaff = (user) => STAFF_ROLES.includes(user.role);
+const requireStaff = requireRole(...STAFF_ROLES);
+
+// Ownership: is this the signed-in user's own tourist ID?
+const ownsTouristId = async (user, touristId) => Boolean(
+  touristId && user.userId && await Tourist.exists({ touristId, userId: user.userId })
+);
+
+// ===== RATE LIMITS =====
+
+const MINUTE = 60 * 1000;
+// Failed sign-ins, counted per account and per network address.
+const loginsByAccount = createRateLimiter({ limit: 10, windowMs: 15 * MINUTE });
+const loginsByAddress = createRateLimiter({ limit: 100, windowMs: 15 * MINUTE });
+const contactChanges = createRateLimiter({ limit: 5, windowMs: 60 * MINUTE });
+// Caps only the email to a contact. Panic alerts themselves are never limited.
+const panicEmails = createRateLimiter({ limit: 3, windowMs: 10 * MINUTE });
+
+const sendRateLimited = (res, { retryAfterSeconds }, message) => {
+  res.set('Retry-After', String(retryAfterSeconds));
+  return sendError(res, 429, message);
+};
+
+// Each sign-in takes its place before the password is checked, so simultaneous
+// guesses cannot slip past the limit. A correct password gives the place back.
+const startLoginAttempt = (req, user) => {
+  const byAddress = loginsByAddress.take(req.ip);
+  if (!byAddress.allowed) return byAddress;
+
+  const typedName = req.body.username.trim().toLowerCase();
+  const account = `${req.ip}|${user ? user._id : typedName}`;
+  const byAccount = loginsByAccount.take(account);
+  if (!byAccount.allowed) {
+    loginsByAddress.refund(req.ip);
+    return byAccount;
+  }
+
+  return {
+    allowed: true,
+    succeeded: () => {
+      loginsByAccount.reset(account);
+      loginsByAddress.refund(req.ip);
+    }
+  };
+};
+const LOGIN_LIMIT_MESSAGE = 'Too many failed sign-in attempts. Please wait a few minutes and try again.';
 
 // MongoDB connection
 mongoose.set('bufferCommands', false); // Fail fast — don't silently buffer queries
@@ -224,15 +279,19 @@ app.post('/api/login', validateBody(validators.credentials), async (req, res) =>
       $or: [{ username }, { email: username }] 
     });
     
+    const attempt = startLoginAttempt(req, user);
+    if (!attempt.allowed) return sendRateLimited(res, attempt, LOGIN_LIMIT_MESSAGE);
+
     if (!user) {
       return sendError(res, 401, 'Invalid credentials');
     }
-    
+
     const isMatch = await user.comparePassword(password);
     if (!isMatch) {
       return sendError(res, 401, 'Invalid credentials');
     }
-    
+    attempt.succeeded();
+
     if (user.status === 'suspended') {
       return sendError(res, 403, 'Account suspended. Contact administrator.');
     }
@@ -338,6 +397,10 @@ app.get('/api/tourists', authenticateToken, requireRole('admin', 'officer'), asy
 
 app.get('/api/tourists/:id', authenticateToken, async (req, res) => {
   try {
+    // Checked before the lookup, so tourists cannot learn which IDs exist.
+    if (!isStaff(req.user) && !await ownsTouristId(req.user, req.params.id)) {
+      return sendError(res, 403, 'Insufficient permissions');
+    }
     const tourist = await Tourist.findOne({ touristId: req.params.id });
     if (!tourist) {
       return sendError(res, 404, 'Tourist not found');
@@ -348,7 +411,7 @@ app.get('/api/tourists/:id', authenticateToken, async (req, res) => {
   }
 });
 
-app.put('/api/tourists/:id/safety-score', validateBody(validators.safetyScoreUpdate), async (req, res) => {
+app.put('/api/tourists/:id/safety-score', requireStaff, validateBody(validators.safetyScoreUpdate), async (req, res) => {
   try {
     const { safetyScore } = req.body;
     const tourist = await Tourist.findOne({ touristId: req.params.id });
@@ -434,7 +497,7 @@ app.post('/api/incidents', authenticateToken, validateBody(validators.incident),
   }
 });
 
-app.put('/api/incidents/:id', authenticateToken, validateBody(validators.incidentUpdate), async (req, res) => {
+app.put('/api/incidents/:id', authenticateToken, requireStaff, validateBody(validators.incidentUpdate), async (req, res) => {
   try {
     const incident = await Incident.findOne({ incidentId: req.params.id });
     
@@ -458,6 +521,10 @@ app.put('/api/incidents/:id', authenticateToken, validateBody(validators.inciden
 app.post('/api/incidents/:id/generate-report', authenticateToken, async (req, res) => {
   try {
     const incident = await Incident.findOne({ incidentId: req.params.id });
+    // Staff, or the tourist the incident is about.
+    if (!isStaff(req.user) && !await ownsTouristId(req.user, incident?.touristId)) {
+      return sendError(res, 403, 'Insufficient permissions');
+    }
     if (!incident) return sendError(res, 404, 'Incident not found');
 
     // Enrich with tourist safety score if available
@@ -510,6 +577,9 @@ app.post('/api/incidents/:id/generate-report', authenticateToken, async (req, re
 });
 
 // ===== AI SERVICE INTEGRATION ENDPOINTS =====
+// Staff only, including any route added under /api/ai later. Location updates
+// still score tourists because they call the AI service directly.
+app.use('/api/ai', requireStaff);
 
 app.post('/api/ai/safety-score', validateBody(validators.safetyScore), async (req, res) => {
   try {
@@ -652,7 +722,7 @@ app.post('/api/geofences/check', validateBody(validators.geofenceCheck), async (
 
 // ===== BLOCKCHAIN ENDPOINTS =====
 
-app.get('/api/blockchain/logs', async (req, res) => {
+app.get('/api/blockchain/logs', requireStaff, async (req, res) => {
   try {
     const result = await BlockchainService.getLogs();
     res.json(result);
@@ -778,10 +848,14 @@ app.post('/api/mobile/auth/login', validateBody(validators.credentials), async (
       $or: [{ username }, { email: username }] 
     });
     
+    const attempt = startLoginAttempt(req, user);
+    if (!attempt.allowed) return sendRateLimited(res, attempt, LOGIN_LIMIT_MESSAGE);
+
     if (!user || !await user.comparePassword(password)) {
       return sendError(res, 401, 'Invalid credentials');
     }
-    
+    attempt.succeeded();
+
     if (user.status === 'suspended') {
       return sendError(res, 403, 'Account suspended');
     }
@@ -885,10 +959,12 @@ app.post('/api/mobile/panic/alert', authenticateToken, validateBody(validators.p
     const username = req.user.username;
     
     const tourist = await Tourist.findOne({ userId: userId.toString() });
-    const touristId = tourist ? tourist.touristId : `T-${userId.toString().slice(-3)}`;
+    // The stand-in must never match a real tourist ID, which would grant ownership.
+    const touristId = tourist ? tourist.touristId : `UNREGISTERED-${userId}`;
     
     const incident = new Incident({
-      incidentId: `PANIC-${Date.now()}`,
+      // The random part keeps alerts raised in the same millisecond from colliding.
+      incidentId: `PANIC-${Date.now()}-${randomUUID().slice(0, 8)}`,
       type: 'Emergency Alert',
       location: lat && lng ? `${lat.toFixed(4)}, ${lng.toFixed(4)}` : 'Unknown Location',
       coordinates: { lat, lng },
@@ -920,15 +996,23 @@ app.post('/api/mobile/panic/alert', authenticateToken, validateBody(validators.p
     emitUpdate('alert:panic', { incident, tourist });
 
     // 5.3 — Email emergency contact on panic
+    // Repeats within the window are not emailed again; a failed send does not count.
     const contactEmail = await getContactEmail(userId, tourist);
-    if (contactEmail) {
+    const emailKey = contactEmail && `${userId}|${contactEmail.toLowerCase()}`;
+    let contactStatus = 'no_contact';
+    if (contactEmail && !panicEmails.take(emailKey).allowed) {
+      contactStatus = 'recently_sent';
+    } else if (contactEmail) {
+      contactStatus = 'sending';
       const loc = lat && lng ? `${parseFloat(lat).toFixed(4)}, ${parseFloat(lng).toFixed(4)}` : 'unknown location';
       NotificationService.sendEmail(
         contactEmail,
         `🚨 EMERGENCY: ${username} needs help!`,
         `EMERGENCY: ${username} has activated the panic button at ${loc}. Please call emergency services immediately!`,
         `<h2 style="color:red">🚨 EMERGENCY ALERT</h2><p><strong>${escapeHtml(username)}</strong> has activated the panic button.</p><p>Location: <strong>${loc}</strong></p><p style="color:red"><strong>Please call emergency services immediately!</strong></p><hr><small>Sent by Travira Tourist Safety System</small>`
-      ).catch(() => {});
+      )
+        .then((result) => (result.success ? null : panicEmails.refund(emailKey)))
+        .catch(() => panicEmails.refund(emailKey));
     }
 
     // 5.8 — FCM push to all officers/admins
@@ -943,6 +1027,7 @@ app.post('/api/mobile/panic/alert', authenticateToken, validateBody(validators.p
     res.json({ 
       success: true, 
       incidentId: incident.incidentId,
+      contactEmail: contactStatus,
       message: 'Emergency alert sent successfully! Help is on the way!',
       estimatedResponse: '5-10 minutes'
     });
@@ -1002,6 +1087,13 @@ app.get('/api/profile/emergency-contact', authenticateToken, async (req, res) =>
 app.put('/api/profile/emergency-contact', authenticateToken, validateBody(validators.emergencyContact), async (req, res) => {
   try {
     const email = req.body.email || null;
+    // Removing a contact is always allowed: it can only reduce what is sent.
+    if (email) {
+      const change = contactChanges.take(req.user.userId);
+      if (!change.allowed) {
+        return sendRateLimited(res, change, 'Too many emergency contact changes. Please try again later.');
+      }
+    }
     const previous = await User.findByIdAndUpdate(
       req.user.userId,
       { emergencyContactEmail: email },
