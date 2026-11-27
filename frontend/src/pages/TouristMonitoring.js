@@ -65,7 +65,7 @@ const TouristMonitoring = () => {
     // Live location updates via WebSocket — no polling needed
     const handleLocationUpdate = (tourist) => {
       setTourists(prev =>
-        prev.map(t => (t.id === tourist.id || t._id === tourist._id ? { ...t, ...tourist } : t))
+        prev.map(t => (t._id === tourist._id ? { ...t, ...tourist } : t))
       );
       setSummary(prev => prev ? { ...prev } : prev);
     };
@@ -78,7 +78,7 @@ const TouristMonitoring = () => {
   const filtered = useMemo(() => {
     if (!query) return tourists;
     return tourists.filter(t =>
-      (t.id || '').toLowerCase().includes(query.toLowerCase()) ||
+      (t.touristId || '').toLowerCase().includes(query.toLowerCase()) ||
       (t.name || '').toLowerCase().includes(query.toLowerCase())
     );
   }, [tourists, query]);
@@ -152,8 +152,8 @@ const TouristMonitoring = () => {
                 </thead>
                 <tbody>
                   {filtered.map(t => (
-                    <tr key={t.id} className="border-t border-gray-100">
-                      <td className="py-2 pr-4 font-mono">{t.id}</td>
+                    <tr key={t._id} className="border-t border-gray-100">
+                      <td className="py-2 pr-4 font-mono">{t.touristId}</td>
                       <td className="py-2 pr-4">{t.name || '-'}</td>
                       <td className="py-2 pr-4">{t.location ? `${t.location.lat.toFixed(4)}, ${t.location.lng.toFixed(4)}` : '-'}</td>
                       <td className="py-2 pr-4">{t.safetyScore}</td>
@@ -187,14 +187,14 @@ const TouristMonitoring = () => {
             />
             {tourists.filter(t => t.location).map(t => (
               <Marker
-                key={t.id}
+                key={t._id}
                 position={[t.location.lat, t.location.lng]}
                 icon={createTouristIcon(t.safetyScore, t.status)}
               >
                 <Popup>
                   <div style={{ minWidth: 140 }}>
                     <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>👤 {t.name}</div>
-                    <div style={{ fontSize: 12, color: '#555' }}>ID: <code>{t.id}</code></div>
+                    <div style={{ fontSize: 12, color: '#555' }}>ID: <code>{t.touristId}</code></div>
                     <div style={{ fontSize: 12, marginTop: 4 }}>
                       🛡️ Safety Score: <strong style={{ color: t.safetyScore >= 85 ? '#16a34a' : t.safetyScore >= 70 ? '#ea580c' : '#dc2626' }}>{t.safetyScore}</strong>
                     </div>

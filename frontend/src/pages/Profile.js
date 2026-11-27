@@ -68,6 +68,18 @@ const Profile = () => {
   return (
     <div className="max-w-3xl mx-auto">
       <h2 className="text-xl font-semibold mb-4">Profile Settings</h2>
+      {user?.role === 'tourist' ? (
+        <dl className="bg-white shadow rounded-lg p-6 space-y-4">
+          <div>
+            <dt className="text-sm font-medium text-gray-700">Username</dt>
+            <dd className="text-gray-900">{user.username}</dd>
+          </div>
+          <div>
+            <dt className="text-sm font-medium text-gray-700">Email</dt>
+            <dd className="text-gray-900 break-all">{user.email}</dd>
+          </div>
+        </dl>
+      ) : (
       <div className="bg-white shadow rounded-lg p-6 space-y-4">
         <div>
           <label className="block text-sm font-medium text-gray-700">Username</label>
@@ -83,6 +95,7 @@ const Profile = () => {
         </div>
         <button className="px-4 py-2 rounded-md bg-blue-600 text-white">Save Changes</button>
       </div>
+      )}
       {user?.role === 'tourist' && <EmergencyContact />}
     </div>
   );

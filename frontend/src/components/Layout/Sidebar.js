@@ -20,17 +20,19 @@ const Sidebar = ({ isOpen, setIsOpen }) => {
   const { user } = useAuth();
 
   const allNavigation = [
-    { name: 'Dashboard', href: '/dashboard', icon: HomeIcon, roles: ['admin', 'officer', 'tourist'] },
+    { name: 'My Safety', href: '/safety', icon: HeartIcon, roles: ['tourist'] },
+    { name: 'Profile', href: '/profile', icon: UsersIcon, roles: ['tourist'] },
+    { name: 'Dashboard', href: '/dashboard', icon: HomeIcon, roles: ['admin', 'officer'] },
     { name: 'User Management', href: '/users', icon: UsersIcon, roles: ['admin'] },
     { name: 'Tourist Monitoring', href: '/tourists', icon: MapIcon, roles: ['admin', 'officer'] },
-    { name: 'Incident Management', href: '/incidents', icon: ExclamationTriangleIcon, roles: ['admin', 'officer', 'tourist'] },
+    { name: 'Incident Management', href: '/incidents', icon: ExclamationTriangleIcon, roles: ['admin', 'officer'] },
     { name: 'AI Analytics', href: '/ai-analytics', icon: ChartBarIcon, roles: ['admin', 'officer'] },
     { name: 'Geofence Zones', href: '/geofences', icon: MapIcon, roles: ['admin', 'officer'] },
     { name: 'Blockchain Logs', href: '/blockchain', icon: CubeIcon, roles: ['admin', 'officer'] },
     { name: 'System Health', href: '/system-health', icon: HeartIcon, roles: ['admin', 'officer'] },
     { name: 'Reports', href: '/reports', icon: DocumentTextIcon, roles: ['admin', 'officer'] },
-    { name: 'Notifications', href: '/notifications', icon: BellIcon, roles: ['admin', 'officer', 'tourist'] },
-    { name: 'Settings', href: '/settings', icon: CogIcon, roles: ['admin', 'officer', 'tourist'] },
+    { name: 'Notifications', href: '/notifications', icon: BellIcon, roles: ['admin', 'officer'] },
+    { name: 'Settings', href: '/settings', icon: CogIcon, roles: ['admin', 'officer'] },
   ];
 
   // Filter navigation based on user role
@@ -108,17 +110,20 @@ const Sidebar = ({ isOpen, setIsOpen }) => {
           </ul>
         </nav>
         
-        <div className="absolute bottom-0 w-full p-4">
-          <div className="bg-gray-800 rounded-lg p-3">
-            <div className="flex items-center">
-              <div className="w-2 h-2 bg-green-400 rounded-full mr-2"></div>
-              <span className="text-gray-300 text-sm">System Online</span>
-            </div>
-            <div className="text-gray-400 text-xs mt-1">
-              All services operational
+        {/* Fixed text, not a live check, so it is not shown to tourists. */}
+        {['admin', 'officer'].includes(user?.role) && (
+          <div className="absolute bottom-0 w-full p-4">
+            <div className="bg-gray-800 rounded-lg p-3">
+              <div className="flex items-center">
+                <div className="w-2 h-2 bg-green-400 rounded-full mr-2"></div>
+                <span className="text-gray-300 text-sm">System Online</span>
+              </div>
+              <div className="text-gray-400 text-xs mt-1">
+                All services operational
+              </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
     </>
   );
