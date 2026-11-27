@@ -40,6 +40,38 @@ test('concurrent score updates from stale Tourist documents preserve every histo
   }
 });
 
+test('scores written from stale documents never clear an emergency', async (t) => {
+  if (!mongoUri) {
+    t.skip('Set MONGODB_URI to a disposable MongoDB test database');
+    return;
+  }
+
+  await mongoose.connect(mongoUri);
+  let tourist;
+
+  try {
+    tourist = await Tourist.create({
+      touristId: `test-emergency-${new mongoose.Types.ObjectId()}`,
+      name: 'Emergency regression test',
+      location: { lat: 0, lng: 0 }
+    });
+
+    // These copies were all read before the panic alert.
+    const staleDocuments = await Promise.all(
+      Array.from({ length: 20 }, () => Tourist.findById(tourist._id))
+    );
+    await Tourist.updateOne({ _id: tourist._id }, { status: 'emergency', safetyScore: 0 });
+    await Promise.all(staleDocuments.map((doc) => doc.updateSafetyScore(85)));
+
+    const saved = await Tourist.findById(tourist._id).lean();
+    assert.equal(saved.status, 'emergency');
+    assert.equal(saved.safetyScore, 85);
+    assert.equal(saved.scoreHistory.length, 20);
+  } finally {
+    if (tourist) await Tourist.deleteOne({ _id: tourist._id });
+  }
+});
+
 after(async () => {
   if (mongoose.connection.readyState !== 0) await mongoose.disconnect();
 });

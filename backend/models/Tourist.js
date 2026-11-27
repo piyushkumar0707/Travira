@@ -94,15 +94,25 @@ touristSchema.methods.updateLocation = function(lat, lng, accuracy) {
 // Update the score and bounded history atomically. Concurrent location requests
 // can hold stale Tourist documents, so saving scoreHistory through document.save()
 // would trigger Mongoose's array version check and reject valid updates.
-touristSchema.methods.updateSafetyScore = function(score) {
+// The status is decided inside the update, from the value stored at that moment,
+// so a new score can never overwrite an emergency raised by a panic alert.
+touristSchema.methods.updateSafetyScore = async function(score) {
   const safeScore = Math.max(0, Math.min(100, score));
+  // An update pipeline skips schema validation, so reject a non-number here.
+  if (!Number.isFinite(safeScore)) throw new TypeError('Safety score must be a number');
+  const entry = { _id: new mongoose.Types.ObjectId(), score: safeScore, timestamp: new Date() };
   return this.constructor.findOneAndUpdate(
     { _id: this._id },
-    {
-      $set: { safetyScore: safeScore, status: safeScore < 50 ? 'high-risk' : 'active' },
-      $push: { scoreHistory: { $each: [{ score: safeScore, timestamp: new Date() }], $slice: -24 } }
-    },
-    { new: true, runValidators: true }
+    [{
+      $set: {
+        safetyScore: safeScore,
+        status: {
+          $cond: [{ $eq: ['$status', 'emergency'] }, 'emergency', safeScore < 50 ? 'high-risk' : 'active']
+        },
+        scoreHistory: { $slice: [{ $concatArrays: [{ $ifNull: ['$scoreHistory', []] }, [entry]] }, -24] }
+      }
+    }],
+    { new: true }
   );
 };
 
