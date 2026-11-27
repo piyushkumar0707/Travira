@@ -108,6 +108,11 @@ const validators = {
     if (body.riskLevel !== undefined && (!isNumber(body.riskLevel) || body.riskLevel < 1 || body.riskLevel > 10)) return 'riskLevel must be between 1 and 10';
     return null;
   },
+  emergencyContact(body) {
+    if (!isObject(body) || typeof body.email !== 'string') return 'email must be a string (send an empty string to remove the contact)';
+    if (body.email !== '' && (body.email.length > 254 || !/^[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+$/.test(body.email))) return 'email must be a single valid email address';
+    return null;
+  },
   device(body) {
     if (!isObject(body) || typeof body.fcmToken !== 'string' || !body.fcmToken.trim() || body.fcmToken.length > 4096) return 'fcmToken must contain 1 to 4096 characters';
     return null;

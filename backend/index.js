@@ -80,6 +80,9 @@ mongoose.connect(process.env.MONGODB_URI, {
 .then(() => {
   console.log('✅ Connected to MongoDB Atlas successfully');
   console.log('Database:', process.env.MONGODB_URI.split('/').pop().split('?')[0]);
+  Tourist.dropLegacyLocationIndex()
+    .then((dropped) => dropped && console.log('Removed the old tourist location index'))
+    .catch((err) => console.error('❌ Could not remove the old tourist location index:', err.message));
 })
 .catch((err) => {
   console.error('❌ MongoDB connection error:', err.message);
@@ -108,6 +111,47 @@ io.on('connection', (socket) => {
 // Utility function to emit real-time updates
 const emitUpdate = (event, data) => {
   io.to('staff').emit(event, data);
+};
+
+const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (char) => (
+  { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]
+));
+
+// The contact the user saved, falling back to one stored on the tourist record.
+const getContactEmail = async (userId, tourist) => {
+  try {
+    const user = await User.findById(userId, 'emergencyContactEmail');
+    if (user?.emergencyContactEmail) return user.emergencyContactEmail;
+  } catch (err) {
+    console.error('Emergency contact lookup failed:', err.message);
+  }
+  return tourist?.emergencyContact?.email || null;
+};
+
+// 5.4 — Email the emergency contact when a tourist enters a restricted zone.
+// Later updates from inside the same zone do not send it again.
+const emailZoneEntry = async ({ userId, username, tourist, violations, lat, lng }) => {
+  try {
+    const alertZoneIds = violations.filter(v => v.alertEnabled).map(v => String(v.geofenceId));
+    if (!alertZoneIds.length && !tourist.emailedZoneIds.length) return;
+
+    const contactEmail = alertZoneIds.length ? await getContactEmail(userId, tourist) : null;
+    const entered = await tourist.claimZoneEntries(contactEmail ? alertZoneIds : []);
+    if (!entered.length) return;
+
+    const name = tourist.name || username;
+    const loc = `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+    NotificationService.sendEmail(
+      contactEmail,
+      `⚠️ Travira Geofence Alert: ${name}`,
+      `TRAVIRA ALERT: ${name} has entered a restricted zone at ${loc}. Please check in with them.`,
+      `<h2>⚠️ Geofence Alert</h2><p><strong>${escapeHtml(name)}</strong> has entered a restricted zone.</p><p>Location: <strong>${loc}</strong></p><p>Please check in with them immediately.</p><hr><small>Sent by Travira Tourist Safety System</small>`
+    )
+      .then((result) => (result.success ? null : tourist.releaseZoneEntries(entered)))
+      .catch((err) => console.error('Geofence email failed:', err.message));
+  } catch (err) {
+    console.error('Geofence email failed:', err.message);
+  }
 };
 
 // ===== AUTHENTICATION ENDPOINTS =====
@@ -812,21 +856,16 @@ app.post('/api/mobile/location/update', authenticateToken, validateBody(validato
     if (geofenceCheck.hasViolations && GeofencingService.shouldSendAlert(tourist, geofenceCheck.violations)) {
       const alertMessage = GeofencingService.generateAlertMessage(tourist, geofenceCheck.violations);
       emitUpdate('alert:geofence', { tourist, alert: alertMessage });
-
-      // 5.4 — Email emergency contact on geofence breach
-      const contactEmail = tourist.emergencyContact?.email;
-      if (contactEmail) {
-        const name = tourist.name || req.user.username;
-        const loc = `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
-        NotificationService.sendEmail(
-          contactEmail,
-          `⚠️ Travira Geofence Alert: ${name}`,
-          `TRAVIRA ALERT: ${name} has entered a restricted zone at ${loc}. Please check in with them.`,
-          `<h2>⚠️ Geofence Alert</h2><p><strong>${name}</strong> has entered a restricted zone.</p><p>Location: <strong>${loc}</strong></p><p>Please check in with them immediately.</p><hr><small>Sent by Travira Tourist Safety System</small>`
-        ).catch(() => {});
-      }
     }
-    
+
+    // A failed zone lookup says nothing about where the tourist is, so skip it.
+    if (!geofenceCheck.error) {
+      await emailZoneEntry({
+        userId, username: req.user.username, tourist,
+        violations: geofenceCheck.violations, lat, lng
+      });
+    }
+
     res.json({ 
       success: true, 
       message: 'Location updated successfully',
@@ -881,14 +920,14 @@ app.post('/api/mobile/panic/alert', authenticateToken, validateBody(validators.p
     emitUpdate('alert:panic', { incident, tourist });
 
     // 5.3 — Email emergency contact on panic
-    const contactEmail = tourist?.emergencyContact?.email;
+    const contactEmail = await getContactEmail(userId, tourist);
     if (contactEmail) {
       const loc = lat && lng ? `${parseFloat(lat).toFixed(4)}, ${parseFloat(lng).toFixed(4)}` : 'unknown location';
       NotificationService.sendEmail(
         contactEmail,
         `🚨 EMERGENCY: ${username} needs help!`,
         `EMERGENCY: ${username} has activated the panic button at ${loc}. Please call emergency services immediately!`,
-        `<h2 style="color:red">🚨 EMERGENCY ALERT</h2><p><strong>${username}</strong> has activated the panic button.</p><p>Location: <strong>${loc}</strong></p><p style="color:red"><strong>Please call emergency services immediately!</strong></p><hr><small>Sent by Travira Tourist Safety System</small>`
+        `<h2 style="color:red">🚨 EMERGENCY ALERT</h2><p><strong>${escapeHtml(username)}</strong> has activated the panic button.</p><p>Location: <strong>${loc}</strong></p><p style="color:red"><strong>Please call emergency services immediately!</strong></p><hr><small>Sent by Travira Tourist Safety System</small>`
       ).catch(() => {});
     }
 
@@ -942,6 +981,43 @@ app.get('/api/mobile/tourist/status', authenticateToken, async (req, res) => {
       ]
     });
   } catch (error) {
+    sendError(res, 500, 'Internal server error');
+  }
+});
+
+// ===== EMERGENCY CONTACT =====
+// Users can read and change only their own contact.
+
+app.get('/api/profile/emergency-contact', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.userId, 'emergencyContactEmail');
+    if (!user) return sendError(res, 404, 'User not found');
+    const tourist = await Tourist.findOne({ userId: req.user.userId });
+    res.json({ email: await getContactEmail(req.user.userId, tourist) || '' });
+  } catch (err) {
+    sendError(res, 500, 'Internal server error');
+  }
+});
+
+app.put('/api/profile/emergency-contact', authenticateToken, validateBody(validators.emergencyContact), async (req, res) => {
+  try {
+    const email = req.body.email || null;
+    const previous = await User.findByIdAndUpdate(
+      req.user.userId,
+      { emergencyContactEmail: email },
+      { new: false, projection: { emergencyContactEmail: 1 } }
+    );
+    if (!previous) return sendError(res, 404, 'User not found');
+
+    const changes = {};
+    // A new contact should hear about a zone the tourist is already inside.
+    if (previous.emergencyContactEmail !== email) changes.$set = { emailedZoneIds: [] };
+    // Removing the contact also removes the older copy, which stops all emails.
+    if (!email) changes.$unset = { 'emergencyContact.email': 1 };
+    if (Object.keys(changes).length) await Tourist.updateOne({ userId: req.user.userId }, changes);
+
+    res.json({ email: email || '' });
+  } catch (err) {
     sendError(res, 500, 'Internal server error');
   }
 });

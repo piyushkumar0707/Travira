@@ -12,7 +12,9 @@ const userSchema = new mongoose.Schema({
   lastActive: { type: Date, default: Date.now },
   joinedDate: { type: Date, default: Date.now },
   fcmToken: { type: String, default: null },
-  emergencyContact: { type: String, default: null }
+  emergencyContact: { type: String, default: null },
+  // Receives panic and restricted-zone emails; set by the user.
+  emergencyContactEmail: { type: String, default: null }
 }, {
   timestamps: true
 });

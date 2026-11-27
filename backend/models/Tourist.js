@@ -46,6 +46,11 @@ const touristSchema = new mongoose.Schema({
     phone: String,
     email: String
   },
+  // Restricted zones the tourist is inside and has already been emailed about.
+  emailedZoneIds: {
+    type: [String],
+    default: []
+  },
   scoreHistory: {
     type: [{
       score: { type: Number },
@@ -61,8 +66,18 @@ const touristSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Index for geospatial queries
-touristSchema.index({ location: '2dsphere' });
+// location is deliberately not geo-indexed: a 2dsphere index reads {lat, lng} as
+// [longitude, latitude] and rejects any longitude beyond ±90. Earlier versions
+// created that index and MongoDB keeps it, so it has to be removed explicitly.
+touristSchema.statics.dropLegacyLocationIndex = async function() {
+  try {
+    await this.collection.dropIndex('location_2dsphere');
+    return true;
+  } catch (err) {
+    if (['IndexNotFound', 'NamespaceNotFound'].includes(err.codeName)) return false;
+    throw err;
+  }
+};
 
 // Index for efficient queries
 touristSchema.index({ status: 1, safetyScore: 1 });
@@ -88,6 +103,27 @@ touristSchema.methods.updateSafetyScore = function(score) {
       $push: { scoreHistory: { $each: [{ score: safeScore, timestamp: new Date() }], $slice: -24 } }
     },
     { new: true, runValidators: true }
+  );
+};
+
+// Record the zones the tourist is in now and return the ones just entered. The
+// single atomic update means concurrent requests cannot both claim an entry.
+// Passing a list without a zone forgets it, so re-entering counts again.
+touristSchema.methods.claimZoneEntries = async function(zoneIds) {
+  const previous = await this.constructor.findOneAndUpdate(
+    { _id: this._id },
+    { $set: { emailedZoneIds: zoneIds } },
+    { new: false, projection: { emailedZoneIds: 1 } }
+  );
+  if (!previous) return [];
+  return zoneIds.filter((id) => !previous.emailedZoneIds.includes(id));
+};
+
+// Undo claims whose email could not be sent, so a later update retries.
+touristSchema.methods.releaseZoneEntries = function(zoneIds) {
+  return this.constructor.updateOne(
+    { _id: this._id },
+    { $pull: { emailedZoneIds: { $in: zoneIds } } }
   );
 };
 

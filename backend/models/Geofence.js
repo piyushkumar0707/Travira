@@ -59,8 +59,8 @@ geofenceSchema.index({ type: 1, active: 1 });
 
 // Method to check if a point is inside the geofence
 geofenceSchema.methods.containsPoint = function(lat, lng) {
-  if (this.geometry.type === 'Circle') {
-    const point = [lng, lat];
+  // Circles are stored as a GeoJSON Point (the center) plus a radius in meters.
+  if (this.geometry.type === 'Point') {
     const center = this.geometry.coordinates;
     const distance = this.calculateDistance(center[1], center[0], lat, lng);
     return distance <= this.geometry.radius;
@@ -86,18 +86,25 @@ geofenceSchema.methods.calculateDistance = function(lat1, lon1, lat2, lon2) {
 };
 
 // Static method to find geofences containing a point
-geofenceSchema.statics.findContainingPoint = function(lat, lng) {
-  return this.find({
-    active: true,
-    geometry: {
-      $geoIntersects: {
-        $geometry: {
-          type: 'Point',
-          coordinates: [lng, lat]
+geofenceSchema.statics.findContainingPoint = async function(lat, lng) {
+  // MongoDB can match polygons directly, but it ignores a Point's custom radius,
+  // so circle distances are checked here.
+  const [polygons, circles] = await Promise.all([
+    this.find({
+      active: true,
+      'geometry.type': 'Polygon',
+      geometry: {
+        $geoIntersects: {
+          $geometry: {
+            type: 'Point',
+            coordinates: [lng, lat]
+          }
         }
       }
-    }
-  });
+    }),
+    this.find({ active: true, 'geometry.type': 'Point' })
+  ]);
+  return [...polygons, ...circles.filter((circle) => circle.containsPoint(lat, lng))];
 };
 
 // Static method to get all active restricted areas
