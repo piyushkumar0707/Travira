@@ -62,6 +62,8 @@ const validators = {
     if (!incidentTypes.includes(body.type)) return 'type must be a supported incident type';
     if (typeof body.location !== 'string' || !body.location.trim() || body.location.length > 300) return 'location must contain 1 to 300 characters';
     if (typeof body.description !== 'string' || !body.description.trim() || body.description.length > 5000) return 'description must contain 1 to 5000 characters';
+    // Anything but text would be read as a database query by the ownership check.
+    if (body.touristId != null && typeof body.touristId !== 'string') return 'touristId must be a string';
     if (body.severity !== undefined && !['Low', 'Medium', 'High', 'Critical'].includes(body.severity)) return 'severity is not supported';
     if (body.coordinates !== undefined) {
       const { lat, lng } = body.coordinates || {};

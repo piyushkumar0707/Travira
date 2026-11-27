@@ -423,11 +423,11 @@ describe('Node API integration', { concurrency: false }, () => {
 
   test('a caller cannot choose an incident ID to fake a panic alert', async () => {
     const victim = await trackedTourist('spoof_target');
-    const attacker = await registerTourist('spoof_sender');
     const chosen = `PANIC-spoof-${uniqueSuffix()}`;
 
+    // Even staff, who may name any tourist, cannot choose the ID.
     const { response, body } = await api('/api/incidents', {
-      method: 'POST', token: attacker.token,
+      method: 'POST', token: signToken('officer'),
       body: {
         incidentId: chosen, touristId: victim.touristId, type: 'Emergency Alert',
         location: 'Test market', description: 'spoofed alert',
@@ -445,6 +445,48 @@ describe('Node API integration', { concurrency: false }, () => {
   });
 
   // ===== Access control =====
+
+  test('a tourist can report an incident only about themselves', async () => {
+    const owner = await trackedTourist('report_owner');
+    const reporter = await trackedTourist('report_sender');
+    const untracked = await registerTourist('report_untracked');
+    const report = async (token, extra) => {
+      const result = await api('/api/incidents', {
+        method: 'POST', token,
+        body: { type: 'Theft', location: 'Test market', description: 'ownership test', ...extra },
+      });
+      if (result.body.incidentId) incidentIds.push(result.body.incidentId);
+      return result;
+    };
+
+    for (const sender of [reporter, untracked]) {
+      assertForbidden(await report(sender.token, { touristId: owner.touristId }), 'the ID of another tourist');
+      assertForbidden(await report(sender.token, { touristId: 'it-missing' }), 'an ID that does not exist');
+    }
+    for (const touristId of [[reporter.touristId, owner.touristId], { $ne: null }, 7]) {
+      const { response } = await report(reporter.token, { touristId });
+      assert.equal(response.status, 400, JSON.stringify(touristId));
+    }
+    assert.equal(await Incident.countDocuments({ touristId: owner.touristId }), 0);
+
+    const own = await report(reporter.token, { touristId: reporter.touristId, tourist: owner.username });
+    assert.equal(own.response.status, 201, JSON.stringify(own.body));
+    assert.equal(own.body.touristId, reporter.touristId);
+    assert.equal(own.body.tourist, reporter.username, 'cannot borrow another name');
+
+    for (const extra of [{}, { touristId: '', tourist: owner.username }]) {
+      const { response, body } = await report(untracked.token, extra);
+      assert.equal(response.status, 201, JSON.stringify(body));
+      assert.ok(!body.touristId);
+      assert.equal(body.tourist, untracked.username);
+    }
+
+    for (const role of ['officer', 'admin']) {
+      const { response, body } = await report(signToken(role), { touristId: owner.touristId, tourist: owner.username });
+      assert.equal(response.status, 201, `${role}: ${JSON.stringify(body)}`);
+      assert.deepEqual([body.touristId, body.tourist], [owner.touristId, owner.username]);
+    }
+  });
 
   test('only staff can change a safety score', async () => {
     const owner = await trackedTourist('score_owner');

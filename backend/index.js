@@ -471,11 +471,19 @@ app.get('/api/incidents', authenticateToken, async (req, res) => {
 
 app.post('/api/incidents', authenticateToken, validateBody(validators.incident), async (req, res) => {
   try {
+    const reportedByStaff = isStaff(req.user);
+    // Tourists may attach an incident only to their own record, or to none.
+    if (!reportedByStaff && req.body.touristId && !await ownsTouristId(req.user, req.body.touristId)) {
+      return sendError(res, 403, 'Insufficient permissions');
+    }
+
     const incidentCount = await Incident.countDocuments();
     const incidentId = `INC-2024-${String(incidentCount + 1).padStart(3, '0')}`;
     
     const incident = new Incident({
       ...req.body,
+      // Staff screens show this name, so a tourist's report carries their own.
+      ...(reportedByStaff ? {} : { tourist: req.user.username }),
       // After the body, so a caller cannot choose the ID. A PANIC- ID is what
       // holds a tourist in 'emergency', so only the panic route may create one.
       incidentId,
