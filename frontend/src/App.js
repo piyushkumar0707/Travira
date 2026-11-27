@@ -16,6 +16,7 @@ import Profile from './pages/Profile';
 import ActivityLog from './pages/ActivityLog';
 import Security from './pages/Security';
 import GeofenceManagement from './pages/GeofenceManagement';
+import TouristSafety from './pages/TouristSafety';
 import Login from './pages/Login';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import LandingPage from './pages/LandingPage';
@@ -23,8 +24,41 @@ import { Analytics } from '@vercel/analytics/react';
 import './App.css';
 
 /* ── Dashboard shell (authenticated) ─────────────────────────── */
+const staffRoutes = (
+  <>
+    <Route path="/" element={<Navigate to="/dashboard" replace />} />
+    <Route path="/dashboard" element={<Dashboard />} />
+    <Route path="/users" element={<UserManagement />} />
+    <Route path="/tourists" element={<TouristMonitoring />} />
+    <Route path="/incidents" element={<IncidentManagement />} />
+    <Route path="/ai-analytics" element={<AIAnalytics />} />
+    <Route path="/geofences" element={<GeofenceManagement />} />
+    <Route path="/blockchain" element={<BlockchainLogs />} />
+    <Route path="/system-health" element={<SystemHealth />} />
+    <Route path="/reports" element={<Reports />} />
+    <Route path="/notifications" element={<Notifications />} />
+    <Route path="/settings" element={<Settings />} />
+    <Route path="/profile" element={<Profile />} />
+    <Route path="/activity-log" element={<ActivityLog />} />
+    <Route path="/security" element={<Security />} />
+    <Route path="*" element={<Navigate to="/dashboard" replace />} />
+  </>
+);
+
+// Tourists only get these pages; every other address leads back to /safety.
+const touristRoutes = (
+  <>
+    <Route path="/safety" element={<TouristSafety />} />
+    <Route path="/profile" element={<Profile />} />
+    <Route path="*" element={<Navigate to="/safety" replace />} />
+  </>
+);
+
 function DashboardShell() {
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const { user } = useAuth();
+  const isStaff = ['admin', 'officer'].includes(user?.role);
+  // Tourists are often on a phone, where an open sidebar would cover the page.
+  const [sidebarOpen, setSidebarOpen] = useState(() => isStaff || window.innerWidth >= 1024);
   return (
     <div className="flex h-screen bg-gray-100">
       <Sidebar isOpen={sidebarOpen} setIsOpen={setSidebarOpen} />
@@ -32,22 +66,7 @@ function DashboardShell() {
         <Header sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} />
         <main className="flex-1 overflow-x-hidden overflow-y-auto bg-gray-100 p-6">
           <Routes>
-            <Route path="/" element={<Navigate to="/dashboard" replace />} />
-            <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/users" element={<UserManagement />} />
-            <Route path="/tourists" element={<TouristMonitoring />} />
-            <Route path="/incidents" element={<IncidentManagement />} />
-            <Route path="/ai-analytics" element={<AIAnalytics />} />
-            <Route path="/geofences" element={<GeofenceManagement />} />
-            <Route path="/blockchain" element={<BlockchainLogs />} />
-            <Route path="/system-health" element={<SystemHealth />} />
-            <Route path="/reports" element={<Reports />} />
-            <Route path="/notifications" element={<Notifications />} />
-            <Route path="/settings" element={<Settings />} />
-            <Route path="/profile" element={<Profile />} />
-            <Route path="/activity-log" element={<ActivityLog />} />
-            <Route path="/security" element={<Security />} />
-            <Route path="*" element={<Navigate to="/dashboard" replace />} />
+            {isStaff ? staffRoutes : touristRoutes}
           </Routes>
         </main>
       </div>

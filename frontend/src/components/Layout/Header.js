@@ -27,6 +27,8 @@ const Header = ({ sidebarOpen, setSidebarOpen }) => {
     { id: 5, text: 'Emergency alert resolved', type: 'success', time: '3 hours ago', read: true },
   ]);
   const navigate = useNavigate();
+  // The search box, notification list and account pages below are staff tools.
+  const isStaff = ['admin', 'officer'].includes(user?.role);
 
   const handleLogout = () => {
     logout();
@@ -126,7 +128,7 @@ const Header = ({ sidebarOpen, setSidebarOpen }) => {
 
         <div className="flex items-center space-x-4">
           {/* Search */}
-          <div className="relative hidden md:block">
+          {isStaff && <div className="relative hidden md:block">
             <form onSubmit={handleSearch}>
               <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                 <MagnifyingGlassIcon className="h-5 w-5 text-gray-400" />
@@ -139,10 +141,10 @@ const Header = ({ sidebarOpen, setSidebarOpen }) => {
                 className="block w-80 pl-10 pr-3 py-2 border border-gray-300 rounded-lg leading-5 bg-white placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 text-sm"
               />
             </form>
-          </div>
+          </div>}
 
           {/* Notifications */}
-          <div className="relative" ref={notificationRef}>
+          {isStaff && <div className="relative" ref={notificationRef}>
             <button 
               onClick={() => setShowNotifications(!showNotifications)}
               className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors duration-200 relative"
@@ -214,7 +216,7 @@ const Header = ({ sidebarOpen, setSidebarOpen }) => {
                 </div>
               </div>
             )}
-          </div>
+          </div>}
 
           {/* User Menu */}
           <div className="relative" ref={userMenuRef}>
@@ -244,6 +246,7 @@ const Header = ({ sidebarOpen, setSidebarOpen }) => {
                 >
                   Profile Settings
                 </button>
+                {isStaff && <>
                 <button
                   onClick={() => { setShowUserMenu(false); navigate('/activity-log'); }}
                   className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
@@ -256,6 +259,7 @@ const Header = ({ sidebarOpen, setSidebarOpen }) => {
                 >
                   Security
                 </button>
+                </>}
                 <div className="border-t border-gray-100 mt-1">
                   <button
                     onClick={handleLogout}
@@ -275,6 +279,8 @@ const Header = ({ sidebarOpen, setSidebarOpen }) => {
 
 const getPageTitle = (pathname) => {
   const titles = {
+    '/safety': 'My Safety',
+    '/profile': 'My Profile',
     '/dashboard': 'Dashboard Overview',
     '/users': 'User Management',
     '/tourists': 'Tourist Safety Monitoring',
@@ -291,6 +297,8 @@ const getPageTitle = (pathname) => {
 
 const getPageDescription = (pathname) => {
   const descriptions = {
+    '/safety': 'Share your location and ask for help',
+    '/profile': 'Your account details',
     '/dashboard': 'Real-time overview of tourist safety operations',
     '/users': 'Manage users, roles, and access permissions',
     '/tourists': 'Monitor tourist locations and safety scores',
